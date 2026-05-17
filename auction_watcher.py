@@ -144,7 +144,9 @@ class _AuctionHTMLParser(HTMLParser):
         self._row_depth = 0
         self._current_row: Optional[dict[str, str]] = None
         self._current_field: Optional[str] = None
+        self._current_field_depth: Optional[int] = None
         self._current_href: Optional[str] = None
+        self._open_elements: list[tuple[str, set[str]]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
         attr_map = {key: value or "" for key, value in attrs}
@@ -154,19 +156,22 @@ class _AuctionHTMLParser(HTMLParser):
             if _matches_simple_selector(tag, classes, self._row_tag, self._row_class):
                 self._current_row = {}
                 self._row_depth = 1
+                self._open_elements = [(tag, classes)]
             return
 
-        self._row_depth += 1
         for field_name, selector in self._field_selectors.items():
             if self._current_field and field_name != self._current_field:
                 continue
-            if _matches_selector_chain(tag, classes, selector):
+            if _matches_selector_chain(tag, classes, selector, self._open_elements):
                 self._current_field = field_name
+                self._current_field_depth = len(self._open_elements) + 1
                 if field_name == "title":
                     href = attr_map.get("href", "").strip()
                     if href:
                         self._current_href = href
                 break
+        self._open_elements.append((tag, classes))
+        self._row_depth += 1
 
     def handle_data(self, data: str) -> None:
         if self._current_row is None or self._current_field is None:
@@ -177,12 +182,11 @@ class _AuctionHTMLParser(HTMLParser):
         if self._current_row is None:
             return
 
-        if self._current_field is not None:
-            selector = self._field_selectors[self._current_field]
-            current_tag, _ = selector[-1]
-            if tag == current_tag:
-                self._current_field = None
-
+        if self._open_elements:
+            self._open_elements.pop()
+        if self._current_field_depth is not None and len(self._open_elements) < self._current_field_depth:
+            self._current_field = None
+            self._current_field_depth = None
         self._row_depth -= 1
         if self._row_depth == 0:
             if self._current_href:
@@ -190,7 +194,9 @@ class _AuctionHTMLParser(HTMLParser):
             self.rows.append({key: value.strip() for key, value in self._current_row.items() if value.strip()})
             self._current_row = None
             self._current_field = None
+            self._current_field_depth = None
             self._current_href = None
+            self._open_elements = []
 
 
 def _split_simple_selector(selector: str) -> tuple[str, Optional[str]]:
@@ -217,9 +223,37 @@ def _matches_simple_selector(tag: str, classes: set[str], expected_tag: str, exp
     return True
 
 
-def _matches_selector_chain(tag: str, classes: set[str], selector: list[tuple[str, Optional[str]]]) -> bool:
+def _matches_selector_chain(
+    tag: str,
+    classes: set[str],
+    selector: list[tuple[str, Optional[str]]],
+    ancestors: list[tuple[str, set[str]]],
+) -> bool:
+    selector = _normalize_selector_chain(selector)
     expected_tag, expected_class = selector[-1]
-    return _matches_simple_selector(tag, classes, expected_tag, expected_class)
+    if not _matches_simple_selector(tag, classes, expected_tag, expected_class):
+        return False
+    if len(selector) == 1:
+        return True
+
+    ancestor_index = len(ancestors) - 1
+    for expected_tag, expected_class in reversed(selector[:-1]):
+        while ancestor_index >= 0:
+            ancestor_tag, ancestor_classes = ancestors[ancestor_index]
+            ancestor_index -= 1
+            if _matches_simple_selector(ancestor_tag, ancestor_classes, expected_tag, expected_class):
+                break
+        else:
+            return False
+    return True
+
+
+def _normalize_selector_chain(
+    selector: tuple[str, Optional[str]] | list[tuple[str, Optional[str]]]
+) -> list[tuple[str, Optional[str]]]:
+    if isinstance(selector, tuple):
+        return [selector]
+    return selector
 
 
 def parse_auctions_without_bs4(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
