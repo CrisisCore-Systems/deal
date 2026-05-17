@@ -307,7 +307,7 @@ def parse_auctions(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
         end_el = row.select_one(adapter.end_time_selector) if adapter.end_time_selector else None
 
         bids_text = bids_el.get_text(strip=True) if bids_el else ""
-        bids_number_match = re.search(r"\d+", bids_text)
+        bids_number_match = re.search(r"\d+", bids_text or "")
         bids = int(bids_number_match.group(0)) if bids_number_match else 0
 
         try:
