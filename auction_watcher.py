@@ -136,10 +136,14 @@ class _AuctionHTMLParser(HTMLParser):
         self.rows: list[dict[str, str]] = []
         self._row_tag, self._row_class = _split_simple_selector(adapter.row_selector)
         self._field_selectors = {
-            "title": _split_descendant_selector(adapter.title_selector),
-            "current_bid": _split_descendant_selector(adapter.current_bid_selector),
-            "bids": _split_descendant_selector(adapter.bids_selector),
-            "end_time": _split_descendant_selector(adapter.end_time_selector),
+            k: v
+            for k, v in {
+                "title": _split_descendant_selector(adapter.title_selector),
+                "current_bid": _split_descendant_selector(adapter.current_bid_selector),
+                "bids": _split_descendant_selector(adapter.bids_selector),
+                "end_time": _split_descendant_selector(adapter.end_time_selector),
+            }.items()
+            if v
         }
         self._row_depth = 0
         self._current_row: Optional[dict[str, str]] = None
@@ -212,6 +216,8 @@ def _split_simple_selector(selector: str) -> tuple[str, Optional[str]]:
 
 
 def _split_descendant_selector(selector: str) -> list[tuple[str, Optional[str]]]:
+    if not selector.strip():
+        return []
     return [_split_simple_selector(part) for part in selector.split() if part.strip()]
 
 
@@ -288,19 +294,19 @@ def parse_auctions(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
     parsed: list[AuctionItem] = []
 
     for row in soup.select(adapter.row_selector):
-        title_el = row.select_one(adapter.title_selector)
-        bid_el = row.select_one(adapter.current_bid_selector)
-        bids_el = row.select_one(adapter.bids_selector)
-        end_el = row.select_one(adapter.end_time_selector)
-
-        if not (title_el and bid_el and bids_el and end_el):
+        title_el = row.select_one(adapter.title_selector) if adapter.title_selector else None
+        if not title_el:
             continue
 
         href = title_el.get("href")
         if not href:
             continue
 
-        bids_text = bids_el.get_text(strip=True)
+        bid_el = row.select_one(adapter.current_bid_selector) if adapter.current_bid_selector else None
+        bids_el = row.select_one(adapter.bids_selector) if adapter.bids_selector else None
+        end_el = row.select_one(adapter.end_time_selector) if adapter.end_time_selector else None
+
+        bids_text = bids_el.get_text(strip=True) if bids_el else ""
         bids_number_match = re.search(r"\d+", bids_text or "")
         bids = int(bids_number_match.group(0)) if bids_number_match else 0
 
@@ -309,9 +315,9 @@ def parse_auctions(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
                 site=adapter.name,
                 title=title_el.get_text(strip=True),
                 url=urljoin(adapter.base_url, href),
-                current_bid=parse_money(bid_el.get_text(strip=True)),
+                current_bid=parse_money(bid_el.get_text(strip=True) if bid_el else ""),
                 bids=bids,
-                end_time=parse_end_time(end_el.get_text(strip=True)),
+                end_time=parse_end_time(end_el.get_text(strip=True) if end_el else ""),
             )
         except (TypeError, ValueError):
             continue
@@ -392,7 +398,14 @@ def build_default_adapters() -> list[SiteAdapter]:
         SiteAdapter(
             name="govplanet",
             base_url="https://www.govplanet.com",
-            listing_url=os.getenv("GOVPLANET_LISTING_URL", "https://www.govplanet.com/Government+Surplus"),
+            listing_url=os.getenv("GOVPLANET_LISTING_URL", "https://www.govplanet.com/jsp/s/search.ips"),
+            # GovPlanet search results use card/list blocks; selectors below are broad
+            # starting-point defaults — tighten after inspecting live HTML.
+            row_selector="li",
+            title_selector="a",
+            current_bid_selector="",
+            bids_selector="",
+            end_time_selector="",
         ),
         SiteAdapter(
             name="publicsurplus",
