@@ -137,9 +137,9 @@ class _AuctionHTMLParser(HTMLParser):
         self._row_tag, self._row_class = _split_simple_selector(adapter.row_selector)
         self._field_selectors = {
             "title": _split_descendant_selector(adapter.title_selector),
-            "current_bid": _split_simple_selector(adapter.current_bid_selector),
-            "bids": _split_simple_selector(adapter.bids_selector),
-            "end_time": _split_simple_selector(adapter.end_time_selector),
+            "current_bid": _split_descendant_selector(adapter.current_bid_selector),
+            "bids": _split_descendant_selector(adapter.bids_selector),
+            "end_time": _split_descendant_selector(adapter.end_time_selector),
         }
         self._row_depth = 0
         self._current_row: Optional[dict[str, str]] = None
@@ -202,7 +202,7 @@ class _AuctionHTMLParser(HTMLParser):
 def _split_simple_selector(selector: str) -> tuple[str, Optional[str]]:
     selector = selector.strip()
     if not selector:
-        raise ValueError("selector is empty")
+        raise ValueError("selector is empty or whitespace")
     if selector.startswith("."):
         return "*", selector[1:]
     if "." in selector:
@@ -229,7 +229,6 @@ def _matches_selector_chain(
     selector: list[tuple[str, Optional[str]]],
     ancestors: list[tuple[str, set[str]]],
 ) -> bool:
-    selector = _normalize_selector_chain(selector)
     expected_tag, expected_class = selector[-1]
     if not _matches_simple_selector(tag, classes, expected_tag, expected_class):
         return False
@@ -238,22 +237,16 @@ def _matches_selector_chain(
 
     ancestor_index = len(ancestors) - 1
     for expected_tag, expected_class in reversed(selector[:-1]):
+        matched = False
         while ancestor_index >= 0:
             ancestor_tag, ancestor_classes = ancestors[ancestor_index]
             ancestor_index -= 1
             if _matches_simple_selector(ancestor_tag, ancestor_classes, expected_tag, expected_class):
+                matched = True
                 break
-        else:
+        if not matched:
             return False
     return True
-
-
-def _normalize_selector_chain(
-    selector: tuple[str, Optional[str]] | list[tuple[str, Optional[str]]]
-) -> list[tuple[str, Optional[str]]]:
-    if isinstance(selector, tuple):
-        return [selector]
-    return selector
 
 
 def parse_auctions_without_bs4(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
