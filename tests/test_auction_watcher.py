@@ -48,6 +48,54 @@ class AuctionWatcherTests(unittest.TestCase):
         self.assertEqual(parsed[0].url, "https://www.govplanet.com/item/abc")
         self.assertEqual(parsed[0].bids, 0)
 
+    def test_parse_auctions_govplanet_adapter(self):
+        """GovPlanet adapter: empty bids/end_time selectors must not crash; items
+        without an end_time are silently skipped rather than raising."""
+        from auction_watcher import build_default_adapters
+
+        govplanet = next(a for a in build_default_adapters() if a.name == "govplanet")
+
+        # Verify listing URL points to the search endpoint, not the marketing page.
+        self.assertIn("search.ips", govplanet.listing_url)
+
+        # HTML mimicking card-style GovPlanet results (no dedicated end-time element).
+        html = """
+        <ul>
+          <li><a href="/for-sale/123">Generator</a> <span>US $5,000</span></li>
+          <li><a href="/for-sale/456">Pickup Truck</a> <span>US $1,100</span></li>
+        </ul>
+        """
+        # Items lack an end_time, so parse_end_time raises ValueError and they are
+        # skipped — but the call itself must not raise.
+        parsed = parse_auctions(html, govplanet)
+        self.assertEqual(parsed, [])
+
+    def test_parse_auctions_optional_bids(self):
+        """When bids_selector is empty, bids should default to 0."""
+        adapter = SiteAdapter(
+            name="testsite",
+            base_url="https://example.com",
+            listing_url="https://example.com/auctions",
+            row_selector="tr.auction-row",
+            title_selector=".title a",
+            current_bid_selector=".current-bid",
+            bids_selector="",
+            end_time_selector=".end-time",
+        )
+        html = """
+        <table>
+          <tr class=\"auction-row\">
+            <td class=\"title\"><a href=\"/item/1\">Widget</a></td>
+            <td class=\"current-bid\">$250</td>
+            <td class=\"end-time\">05/17/2026 14:32 PT</td>
+          </tr>
+        </table>
+        """
+        parsed = parse_auctions(html, adapter)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].title, "Widget")
+        self.assertEqual(parsed[0].bids, 0)
+
     def test_filter_targets(self):
         now = dt.datetime(2026, 5, 17, 21, 0, tzinfo=dt.timezone.utc)
         items = [
