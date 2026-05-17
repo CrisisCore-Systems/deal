@@ -267,7 +267,7 @@ def parse_auctions_without_bs4(html: str, adapter: SiteAdapter) -> list[AuctionI
             continue
 
         bids_text = row.get("bids", "")
-        bids_number_match = re.search(r"\d+", bids_text or "")
+        bids_number_match = re.search(r"\d+", bids_text)
         bids = int(bids_number_match.group(0)) if bids_number_match else 0
 
         try:
