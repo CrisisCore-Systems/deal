@@ -165,7 +165,7 @@ class _AuctionHTMLParser(HTMLParser):
             if _matches_selector_chain(tag, classes, selector, self._open_elements):
                 self._current_field = field_name
                 self._current_field_depth = len(self._open_elements) + 1
-                if field_name == "title":
+                if field_name == "title" and tag == "a":
                     href = attr_map.get("href", "").strip()
                     if href:
                         self._current_href = href
