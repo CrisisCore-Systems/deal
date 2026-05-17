@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import sys
+from html.parser import HTMLParser
 from typing import Iterable, Optional
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -128,9 +129,160 @@ def fetch_page(url: str, timeout: int = 15) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
+class _AuctionHTMLParser(HTMLParser):
+    def __init__(self, adapter: SiteAdapter):
+        super().__init__(convert_charrefs=True)
+        self.adapter = adapter
+        self.rows: list[dict[str, str]] = []
+        self._row_tag, self._row_class = _split_simple_selector(adapter.row_selector)
+        self._field_selectors = {
+            "title": _split_descendant_selector(adapter.title_selector),
+            "current_bid": _split_descendant_selector(adapter.current_bid_selector),
+            "bids": _split_descendant_selector(adapter.bids_selector),
+            "end_time": _split_descendant_selector(adapter.end_time_selector),
+        }
+        self._row_depth = 0
+        self._current_row: Optional[dict[str, str]] = None
+        self._current_field: Optional[str] = None
+        self._current_field_depth: Optional[int] = None
+        self._current_href: Optional[str] = None
+        self._open_elements: list[tuple[str, set[str]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        attr_map = {key: value or "" for key, value in attrs}
+        classes = set(attr_map.get("class", "").split())
+
+        if self._current_row is None:
+            if _matches_simple_selector(tag, classes, self._row_tag, self._row_class):
+                self._current_row = {}
+                self._row_depth = 1
+                self._open_elements = [(tag, classes)]
+            return
+
+        for field_name, selector in self._field_selectors.items():
+            if self._current_field and field_name != self._current_field:
+                continue
+            if _matches_selector_chain(tag, classes, selector, self._open_elements):
+                self._current_field = field_name
+                self._current_field_depth = len(self._open_elements) + 1
+                if field_name == "title" and tag == "a":
+                    href = attr_map.get("href", "").strip()
+                    if href:
+                        self._current_href = href
+                break
+        self._open_elements.append((tag, classes))
+        self._row_depth += 1
+
+    def handle_data(self, data: str) -> None:
+        if self._current_row is None or self._current_field is None:
+            return
+        self._current_row[self._current_field] = self._current_row.get(self._current_field, "") + data
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._current_row is None:
+            return
+
+        if self._open_elements:
+            self._open_elements.pop()
+        if self._current_field_depth is not None and len(self._open_elements) < self._current_field_depth:
+            self._current_field = None
+            self._current_field_depth = None
+        self._row_depth -= 1
+        if self._row_depth == 0:
+            if self._current_href:
+                self._current_row["href"] = self._current_href
+            self.rows.append({key: value.strip() for key, value in self._current_row.items() if value.strip()})
+            self._current_row = None
+            self._current_field = None
+            self._current_field_depth = None
+            self._current_href = None
+            self._open_elements = []
+
+
+def _split_simple_selector(selector: str) -> tuple[str, Optional[str]]:
+    selector = selector.strip()
+    if not selector:
+        raise ValueError("selector is empty or whitespace")
+    if selector.startswith("."):
+        return "*", selector[1:]
+    if "." in selector:
+        tag, class_name = selector.split(".", 1)
+        return tag, class_name
+    return selector, None
+
+
+def _split_descendant_selector(selector: str) -> list[tuple[str, Optional[str]]]:
+    return [_split_simple_selector(part) for part in selector.split() if part.strip()]
+
+
+def _matches_simple_selector(tag: str, classes: set[str], expected_tag: str, expected_class: Optional[str]) -> bool:
+    if expected_tag != "*" and tag != expected_tag:
+        return False
+    if expected_class and expected_class not in classes:
+        return False
+    return True
+
+
+def _matches_selector_chain(
+    tag: str,
+    classes: set[str],
+    selector: list[tuple[str, Optional[str]]],
+    ancestors: list[tuple[str, set[str]]],
+) -> bool:
+    expected_tag, expected_class = selector[-1]
+    if not _matches_simple_selector(tag, classes, expected_tag, expected_class):
+        return False
+    if len(selector) == 1:
+        return True
+
+    ancestor_index = len(ancestors) - 1
+    for expected_tag, expected_class in reversed(selector[:-1]):
+        matched = False
+        while ancestor_index >= 0:
+            ancestor_tag, ancestor_classes = ancestors[ancestor_index]
+            ancestor_index -= 1
+            if _matches_simple_selector(ancestor_tag, ancestor_classes, expected_tag, expected_class):
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
+
+
+def parse_auctions_without_bs4(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
+    parser = _AuctionHTMLParser(adapter)
+    parser.feed(html)
+    parsed: list[AuctionItem] = []
+
+    for row in parser.rows:
+        href = row.get("href")
+        if not href:
+            continue
+
+        bids_text = row.get("bids", "")
+        bids_number_match = re.search(r"\d+", bids_text)
+        bids = int(bids_number_match.group(0)) if bids_number_match else 0
+
+        try:
+            item = AuctionItem(
+                site=adapter.name,
+                title=row.get("title", ""),
+                url=urljoin(adapter.base_url, href),
+                current_bid=parse_money(row.get("current_bid", "")),
+                bids=bids,
+                end_time=parse_end_time(row.get("end_time", "")),
+            )
+        except (TypeError, ValueError):
+            continue
+
+        parsed.append(item)
+
+    return parsed
+
+
 def parse_auctions(html: str, adapter: SiteAdapter) -> list[AuctionItem]:
     if BeautifulSoup is None:
-        raise RuntimeError("beautifulsoup4 is required for HTML parsing")
+        return parse_auctions_without_bs4(html, adapter)
 
     soup = BeautifulSoup(html, "html.parser")
     parsed: list[AuctionItem] = []
